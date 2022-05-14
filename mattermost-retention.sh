@@ -8,7 +8,8 @@ DB_USER="mmuser"
 DB_NAME="mattermost"
 DB_PASS="PASSWORD"
 DB_HOST="127.0.0.1"
-RETENTION="180"		# retention in days for posts
+DB_DRIVE="postgres"
+RETENTION="365"		# retention in days for posts
 RETENTION2="7"		# retention in days for user-deleted posts
 DATA_PATH="/mattermost/data/"
 
@@ -23,19 +24,47 @@ echo ""
 echo "cleanup database"
 echo ""
 
-# remove old posts that are neither pinned nor saved, based on primary retention
-mysql --password=$DB_PASS --user=$DB_USER --host=$DB_HOST --database=$DB_NAME --execute="DELETE FROM Posts WHERE CreateAt < $delete_before AND IsPinned = 0 AND NOT EXISTS (SELECT * FROM Preferences WHERE Category = 'flagged_post' AND Name = Posts.Id);"
+case $DB_DRIVE in
 
-# remove user-deleted posts based on secondary retention2
-mysql --password=$DB_PASS --user=$DB_USER --host=$DB_HOST --database=$DB_NAME --execute="DELETE FROM Posts WHERE CreateAt < $delete_before2 AND DeleteAt > 0;"
+  postgres)
+        echo "Using postgres database."
+        export PGPASSWORD=$DB_PASS
 
-# get list of orphaned files to be removed
-mysql --password=$DB_PASS --user=$DB_USER --host=$DB_HOST --database=$DB_NAME --execute="SELECT Path FROM FileInfo AS fi LEFT JOIN Posts AS p ON fi.PostId = p.Id WHERE p.Id IS NULL OR fi.PostId = '';" > /tmp/mattermost-paths.list
-mysql --password=$DB_PASS --user=$DB_USER --host=$DB_HOST --database=$DB_NAME --execute="SELECT ThumbnailPath FROM FileInfo AS fi LEFT JOIN Posts AS p ON fi.PostId = p.Id WHERE p.Id IS NULL OR fi.PostId = '';" >> /tmp/mattermost-paths.list
-mysql --password=$DB_PASS --user=$DB_USER --host=$DB_HOST --database=$DB_NAME --execute="SELECT PreviewPath FROM FileInfo AS fi LEFT JOIN Posts AS p ON fi.PostId = p.Id WHERE p.Id IS NULL OR fi.PostId = '';" >> /tmp/mattermost-paths.list
+        ###
+        # get list of files to be removed
+        ###
+        psql -h "$DB_HOST" -U"$DB_USER" "$DB_NAME" -t -c "select path from fileinfo where createat < $delete_before;" > /tmp/mattermost-paths.list
+        psql -h "$DB_HOST" -U"$DB_USER" "$DB_NAME" -t -c "select thumbnailpath from fileinfo where createat < $delete_before;" >> /tmp/mattermost-paths.list
+        psql -h "$DB_HOST" -U"$DB_USER" "$DB_NAME" -t -c "select previewpath from fileinfo where createat < $delete_before;" >> /tmp/mattermost-paths.list
 
-# remove orphaned files from db
-mysql --password=$DB_PASS --user=$DB_USER --host=$DB_HOST --database=$DB_NAME --execute="DELETE fi FROM FileInfo AS fi LEFT JOIN Posts AS p ON fi.PostId = p.Id WHERE p.Id IS NULL OR fi.PostId = '';"
+        ###
+        # cleanup db
+        ###
+        psql -h "$DB_HOST" -U"$DB_USER" "$DB_NAME" -t -c "delete from posts where createat < $delete_before;"
+        psql -h "$DB_HOST" -U"$DB_USER" "$DB_NAME" -t -c "delete from fileinfo where createat < $delete_before;"
+    ;;
+
+  mysql)
+        echo "Using mysql database."
+
+        ###
+        # get list of files to be removed
+        ###
+        mysql --password=$DB_PASS --user=$DB_USER --host=$DB_HOST --database=$DB_NAME --execute="select path from FileInfo where createat < $delete_before;" > /tmp/mattermost-paths.list
+        mysql --password=$DB_PASS --user=$DB_USER --host=$DB_HOST --database=$DB_NAME --execute="select thumbnailpath from FileInfo where createat < $delete_before;" >> /tmp/mattermost-paths.list
+        mysql --password=$DB_PASS --user=$DB_USER --host=$DB_HOST --database=$DB_NAME --execute="select previewpath from FileInfo where createat < $delete_before;" >> /tmp/mattermost-paths.list
+
+        ###
+        # cleanup db
+        ###
+        mysql --password=$DB_PASS --user=$DB_USER --host=$DB_HOST --database=$DB_NAME --execute="delete from Posts where createat < $delete_before;"
+        mysql --password=$DB_PASS --user=$DB_USER --host=$DB_HOST --database=$DB_NAME --execute="delete from FileInfo where createat < $delete_before;"
+    ;;
+  *)
+        echo "Unknown DB_DRIVE option. Currently ONLY mysql AND postgres are available."
+        exit 1
+    ;;
+esac
 
 echo ""
 echo ""
